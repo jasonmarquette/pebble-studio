@@ -512,11 +512,18 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null = () => nu
     process.env.PEBBLE_SIM_ENV_FILE = simEnvPath(app.getPath("userData"));
 
     if (process.platform !== "win32") {
-      const simModulePath = path.join(
-        app.getAppPath(),
-        "vendor",
-        "pebble-sim-site",
-      );
+      const simModulePath = app.isPackaged
+        ? path.join(
+            process.resourcesPath,
+            "app.asar.unpacked",
+            "vendor",
+            "pebble-sim-site",
+          )
+        : path.join(
+            app.getAppPath(),
+            "vendor",
+            "pebble-sim-site",
+          );
       process.env.PYTHONPATH = process.env.PYTHONPATH
         ? `${simModulePath}:${process.env.PYTHONPATH}`
         : simModulePath;
