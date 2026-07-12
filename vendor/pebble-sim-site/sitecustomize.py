@@ -85,16 +85,36 @@ if _ctl:
 
 
 # --- Pebble Studio simulated location & weather ---------------------------------
-# Independent of the fake-clock block above. When PEBBLE_SIM_ENV_FILE is set, install
-# the requests/pygeoip patches so weather watchfaces resolve a fixed location and get
-# synthetic weather offline. Failure here must never break the interpreter.
+# Python exposes sys.argv as ["-m", ...] while sitecustomize runs for
+# `python -m pypkjs`, so argv alone cannot identify the process. Inspect the
+# current process command line as a POSIX fallback, while leaving every other
+# pebble-tool command untouched.
+import subprocess as _subprocess
+import sys as _sys
+
 _sim_file = os.environ.get("PEBBLE_SIM_ENV_FILE")
-if _sim_file:
+
+
+def _is_pypkjs_process():
+    if any("pypkjs" in str(arg).lower() for arg in _sys.argv):
+        return True
+
+    try:
+        command = _subprocess.check_output(
+            ["ps", "-p", str(os.getpid()), "-o", "command="],
+            text=True,
+            stderr=_subprocess.DEVNULL,
+        ).lower()
+        return "pypkjs" in command
+    except Exception:
+        return False
+
+
+if _sim_file and _is_pypkjs_process():
     try:
         from gevent import monkey as _monkey
         _monkey.patch_all()
         import pebble_studio_sim
         pebble_studio_sim.install(_sim_file)
     except Exception as _sim_err:  # pragma: no cover - defensive
-        import sys as _sys
         _sys.stderr.write("pebble_studio_sim install failed: %r\n" % (_sim_err,))

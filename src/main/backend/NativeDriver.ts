@@ -5,6 +5,7 @@ import * as cli from "./pebbleCli.js";
 import { bootEmulator, stopEmulator, type BootToken, type OnStep } from "./bootEmulator.js";
 import { setFakeTimeCmd, ensureTimeShim } from "./timeShim.js";
 import { spawnLineStream } from "./lineStream.js";
+import type { WinInputChannel } from "./winInputChannel.js";
 
 /** Default stop uses the native (current-host) teardown. */
 const defaultStop: StopFn = () => stopEmulator();
@@ -21,6 +22,8 @@ export interface NativeDriverDeps {
   /** Streaming spawn for `streamLogs` (injectable for tests). Defaults to the
    * real node spawn. */
   logSpawn?: typeof spawnLineStream;
+  /** Persistent emulator bridge channel for buttons and taps. */
+  inputChannel?: WinInputChannel;
 }
 
 export class NativeDriver implements BackendDriver {
@@ -72,10 +75,21 @@ export class NativeDriver implements BackendDriver {
   }
 
   async button(id: ButtonId, action: ButtonAction): Promise<void> {
+    const ch = this.deps.inputChannel;
+    if (ch) {
+      const command =
+        action === "release"
+          ? "release"
+          : action === "hold"
+            ? `hold ${id}`
+            : `click ${id}`;
+      if (ch.send(command)) return;
+    }
     await this.exec(cli.buttonCmd(id, action));
   }
 
   async accelTap(): Promise<void> {
+    if (this.deps.inputChannel?.send("tap x+")) return;
     await this.exec(cli.accelTapCmd());
   }
 
@@ -151,6 +165,9 @@ export class NativeDriver implements BackendDriver {
   }
 
   streamLogs(id: PlatformId, onLine: (line: string) => void): { kill(): void } | null {
+    const viaChannel = this.deps.inputChannel?.streamAppLogs(onLine) ?? null;
+    if (viaChannel) return viaChannel;
+
     const spawnFn = this.deps.logSpawn ?? spawnLineStream;
     // --vnc is REQUIRED: a `--emulator` command without it makes pebble-tool
     // SIGKILL the running VNC qemu and respawn a non-VNC one (see withVnc below),
