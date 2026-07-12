@@ -6,6 +6,7 @@ import {
   pebbleDataDir,
   pebbleCmd,
   bundledToolsPresent,
+  hostIsArm64,
   type WinRuntimeCtx,
 } from "../../src/main/backend/winRuntime.js";
 
@@ -124,5 +125,67 @@ describe("winRuntime pebbleCmd invocation contract", () => {
     expect(c.env?.XDG_DATA_HOME).toBe(
       "C:\\Users\\TestUser\\AppData\\Roaming\\Pebble Studio\\pebble-data",
     );
+  });
+});
+
+describe("winRuntime qemuExe arch selection", () => {
+  const armHostBundlePresent: WinRuntimeCtx = {
+    packaged: true,
+    resourcesPath: "C:\\Program Files\\Pebble Studio\\resources",
+    repoRoot: "C:\\repo",
+    userDataDir: "C:\\data",
+    hostArm64: true,
+    exists: () => true, // arm64 bundle staged
+  };
+
+  const armHostBundleMissing: WinRuntimeCtx = {
+    ...armHostBundlePresent,
+    // arm64 exe absent; every other path "exists"
+    exists: (p: string) => !p.includes("qemu-pebble-win-arm64"),
+  };
+
+  const x64Host: WinRuntimeCtx = {
+    ...armHostBundlePresent,
+    hostArm64: false,
+  };
+
+  it("returns the arm64 qemu when host is ARM64 and the arm64 bundle is staged", () => {
+    expect(qemuExe(armHostBundlePresent)).toBe(
+      "C:\\Program Files\\Pebble Studio\\resources\\qemu-pebble-win-arm64\\qemu-pebble.exe",
+    );
+  });
+
+  it("falls back to the x64 qemu when host is ARM64 but the arm64 bundle is missing", () => {
+    expect(qemuExe(armHostBundleMissing)).toBe(
+      "C:\\Program Files\\Pebble Studio\\resources\\qemu-pebble-win\\qemu-pebble.exe",
+    );
+  });
+
+  it("returns the x64 qemu on a non-ARM64 host even when an arm64 bundle exists", () => {
+    expect(qemuExe(x64Host)).toBe(
+      "C:\\Program Files\\Pebble Studio\\resources\\qemu-pebble-win\\qemu-pebble.exe",
+    );
+  });
+});
+
+describe("winRuntime hostIsArm64 (real host-arch detection under WOW64)", () => {
+  it("is true when PROCESSOR_ARCHITEW6432 is ARM64 (emulated x64 process on an ARM64 host)", () => {
+    expect(hostIsArm64({ PROCESSOR_ARCHITECTURE: "AMD64", PROCESSOR_ARCHITEW6432: "ARM64" })).toBe(true);
+  });
+
+  it("is true when PROCESSOR_ARCHITECTURE is ARM64 and no ARCHITEW6432 (a natively-arm64 process)", () => {
+    expect(hostIsArm64({ PROCESSOR_ARCHITECTURE: "ARM64" })).toBe(true);
+  });
+
+  it("is case-insensitive", () => {
+    expect(hostIsArm64({ PROCESSOR_ARCHITEW6432: "arm64" })).toBe(true);
+  });
+
+  it("is false on a native x64 host (AMD64, no ARCHITEW6432)", () => {
+    expect(hostIsArm64({ PROCESSOR_ARCHITECTURE: "AMD64" })).toBe(false);
+  });
+
+  it("is false on empty env", () => {
+    expect(hostIsArm64({})).toBe(false);
   });
 });

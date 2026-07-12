@@ -1,0 +1,246 @@
+name: qemu-pebble arm64 (Phase 0 gate)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/qemu-arm64.yml'
+      - 'build/qemu-patches/**'
+
+# Least privilege: the job only reads repo contents (checkout, and the gate's
+# download of this repo's own v3.0.5 release asset — releases fall under contents).
+permissions:
+  contents: read
+
+jobs:
+  build-and-gate:
+    runs-on: windows-11-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up MSYS2 (CLANGARM64)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          install: >-
+            git patch diffutils bzip2
+            mingw-w64-clang-aarch64-clang
+            mingw-w64-clang-aarch64-lld
+            mingw-w64-clang-aarch64-meson
+            mingw-w64-clang-aarch64-ninja
+            mingw-w64-clang-aarch64-pkgconf
+            mingw-w64-clang-aarch64-glib2
+            mingw-w64-clang-aarch64-pixman
+            mingw-w64-clang-aarch64-gettext
+            mingw-w64-clang-aarch64-zlib
+
+      - name: Probe toolchain is native ARM64
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          clang --version
+          printf 'int main(void){return 0;}\n' > /tmp/hello.c
+          clang -o /tmp/hello.exe /tmp/hello.c
+          file /tmp/hello.exe
+          file /tmp/hello.exe | grep -qiE 'aarch64|arm64' && echo "GATE-2 PASS: native ARM64 toolchain" || { echo "GATE-2 FAIL: not Aarch64"; exit 1; }
+
+      - name: Clone qemu-pebble source
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          BUILD="$(cygpath "$RUNNER_TEMP")/qemu-build"
+          mkdir -p "$BUILD" && cd "$BUILD"
+          git clone --depth 1 --branch pebble-10.1 https://github.com/coredevices/qemu
+          echo "QEMU_SRC=$BUILD/qemu" >> "$GITHUB_ENV"
+
+      - name: Apply patches
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cd "$QEMU_SRC"
+          REPO="$(cygpath "$GITHUB_WORKSPACE")"
+          while read -r p; do
+            p="${p%$'\r'}"
+            [ -z "$p" ] && continue
+            echo "== applying $p =="
+            patch -p1 < "$REPO/build/qemu-patches/$p"
+          done < "$REPO/build/qemu-patches/apply-order.txt"
+          # Neutralize the meson install-tree symlink step (needs Developer Mode;
+          # the qemu-bundle/ tree is only used by `meson install`, which we never run).
+          # Keep a valid shebang + exec bit: meson's find_program() rejects a script
+          # with no shebang ("Unusable script"), which fails `configure` at setup.
+          printf '#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n' > scripts/symlink-install-tree.py
+          chmod +x scripts/symlink-install-tree.py
+
+      - name: Configure + build
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cd "$QEMU_SRC"
+          ./configure \
+            --target-list=arm-softmmu \
+            --disable-werror \
+            --disable-docs \
+            --disable-gtk \
+            --disable-sdl \
+            --disable-guest-agent \
+            --enable-vnc
+          ninja -C build qemu-system-arm.exe
+          file build/qemu-system-arm.exe
+          # NOTE: MSYS2 `file` reports this arch as "ARM64" (not "Aarch64") — match both.
+          file build/qemu-system-arm.exe | grep -qiE 'aarch64|arm64' \
+            && echo "GATE-3 PASS: native ARM64 qemu built" \
+            || { echo "GATE-3 FAIL: qemu not ARM64"; exit 1; }
+
+      - name: Bundle exe + DLL closure + pc-bios
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cd "$QEMU_SRC"
+          OUT="$(cygpath "$GITHUB_WORKSPACE")/qemu-pebble-win-arm64"
+          mkdir -p "$OUT"
+          cp build/qemu-system-arm.exe "$OUT/qemu-pebble.exe"
+          # copy every clangarm64 DLL the exe links against
+          ldd "$OUT/qemu-pebble.exe" | grep -i clangarm64 | awk '{print $3}' \
+            | while read -r dll; do cp -u "$dll" "$OUT/"; done
+          cp -r pc-bios "$OUT/pc-bios"
+          ls -la "$OUT"
+
+      - name: Upload qemu arm64 bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-pebble-win-arm64
+          path: qemu-pebble-win-arm64/
+
+      - name: Fetch basalt firmware fixtures
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # resolve the .zip asset URL from the v3.0.5 release (contains vendor/pebble-sdk)
+          $asset = gh release view v3.0.5 --json assets --jq '.assets[] | select(.name | endswith(".zip")) | .url' | Select-Object -First 1
+          if (-not $asset) { throw "no zip asset on v3.0.5" }
+          curl.exe -L -H "Authorization: Bearer $env:GH_TOKEN" -H "Accept: application/octet-stream" -o release.zip "$asset"
+          # extract only the two basalt flash files
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead("$PWD\release.zip")
+          $mk = "fw"; New-Item -ItemType Directory -Force -Path $mk | Out-Null
+          foreach ($e in $zip.Entries) {
+            if ($e.FullName -match 'basalt/qemu/qemu_micro_flash\.bin$') { [System.IO.Compression.ZipFileExtensions]::ExtractToFile($e, "$PWD\$mk\qemu_micro_flash.bin", $true) }
+            if ($e.FullName -match 'basalt/qemu/qemu_spi_flash\.bin\.bz2$') { [System.IO.Compression.ZipFileExtensions]::ExtractToFile($e, "$PWD\$mk\qemu_spi_flash.bin.bz2", $true) }
+            if ($e.FullName -match 'basalt/qemu/qemu_spi_flash\.bin$') { [System.IO.Compression.ZipFileExtensions]::ExtractToFile($e, "$PWD\$mk\qemu_spi_flash.bin", $true) }
+          }
+          $zip.Dispose()
+          if (-not (Test-Path "$mk\qemu_micro_flash.bin")) { throw "micro flash not found in release zip" }
+          if (-not (Test-Path "$mk\qemu_spi_flash.bin.bz2") -and -not (Test-Path "$mk\qemu_spi_flash.bin")) { throw "spi flash not found in release zip" }
+
+      - name: Smoke test — boot basalt headless (THE GATE)
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cd "$(cygpath "$GITHUB_WORKSPACE")"
+          if [ -f fw/qemu_spi_flash.bin.bz2 ]; then
+            bunzip2 -kf fw/qemu_spi_flash.bin.bz2      # -> fw/qemu_spi_flash.bin
+          fi
+          OUT="$PWD/qemu-pebble-win-arm64"
+          export PATH="$OUT:$PATH"                    # DLL closure on PATH
+          rm -f serial.log
+          # launch qemu in the background, let firmware boot, then stop it
+          "$OUT/qemu-pebble.exe" \
+            -rtc base=localtime \
+            -serial null -serial null -serial file:serial.log \
+            -kernel "$PWD/fw/qemu_micro_flash.bin" \
+            -machine pebble-snowy-bb -cpu cortex-m4 \
+            -drive if=none,id=spi-flash,file="$PWD/fw/qemu_spi_flash.bin",format=raw \
+            -L "$OUT/pc-bios" \
+            -vnc :1 &
+          QPID=$!
+          sleep 60
+          kill "$QPID" 2>/dev/null || taskkill //F //PID "$QPID" 2>/dev/null || true
+          echo "===== serial.log ====="
+          cat serial.log || true
+          echo "======================"
+          if grep -q "Ready for communication" serial.log; then
+            echo "GATE-0 PASS: basalt booted to Ready for communication on ARM64"
+          elif grep -q "Booting firmware" serial.log; then
+            echo "GATE-0 PARTIAL: firmware started booting (investigate why it did not complete)"; exit 1
+          else
+            echo "GATE-0 FAIL: no boot markers — native ARM64 qemu did not run the Pebble machine"; exit 1
+          fi
+
+      - name: Fetch emery firmware fixtures
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # resolve the .zip asset URL from the v3.0.5 release (contains vendor/pebble-sdk)
+          $asset = gh release view v3.0.5 --json assets --jq '.assets[] | select(.name | endswith(".zip")) | .url' | Select-Object -First 1
+          if (-not $asset) { throw "no zip asset on v3.0.5" }
+          # reuse the already-downloaded release.zip if the basalt step left it; else fetch
+          if (-not (Test-Path "$PWD\release.zip")) {
+            curl.exe -L -H "Authorization: Bearer $env:GH_TOKEN" -H "Accept: application/octet-stream" -o release.zip "$asset"
+          }
+          # extract only the two emery flash files (emery = M33 board; second CPU family)
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead("$PWD\release.zip")
+          $mk = "fw-emery"; New-Item -ItemType Directory -Force -Path $mk | Out-Null
+          foreach ($e in $zip.Entries) {
+            if ($e.FullName -match 'emery/qemu/qemu_micro_flash\.bin$') { [System.IO.Compression.ZipFileExtensions]::ExtractToFile($e, "$PWD\$mk\qemu_micro_flash.bin", $true) }
+            if ($e.FullName -match 'emery/qemu/qemu_spi_flash\.bin\.bz2$') { [System.IO.Compression.ZipFileExtensions]::ExtractToFile($e, "$PWD\$mk\qemu_spi_flash.bin.bz2", $true) }
+            if ($e.FullName -match 'emery/qemu/qemu_spi_flash\.bin$') { [System.IO.Compression.ZipFileExtensions]::ExtractToFile($e, "$PWD\$mk\qemu_spi_flash.bin", $true) }
+          }
+          $zip.Dispose()
+          if (-not (Test-Path "$mk\qemu_micro_flash.bin")) { throw "emery micro flash not found in release zip" }
+          if (-not (Test-Path "$mk\qemu_spi_flash.bin.bz2") -and -not (Test-Path "$mk\qemu_spi_flash.bin")) { throw "emery spi flash not found in release zip" }
+
+      - name: Smoke test — boot emery headless (M33 coverage)
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cd "$(cygpath "$GITHUB_WORKSPACE")"
+          if [ -f fw-emery/qemu_spi_flash.bin.bz2 ]; then
+            bunzip2 -kf fw-emery/qemu_spi_flash.bin.bz2    # -> fw-emery/qemu_spi_flash.bin
+          fi
+          OUT="$PWD/qemu-pebble-win-arm64"
+          export PATH="$OUT:$PATH"                          # DLL closure on PATH
+          rm -f serial-emery.log
+          # emery on a modern SDK (4.9.169 > 4.9.148) is a "new board": pebble-tool
+          # (sdk/emulator.py) launches it as machine `pebble-emery` / -cpu cortex-m33,
+          # flash exposed via `-drive if=mtd` (NOT if=none,id=spi-flash — that binds the
+          # 32MB SPI to a 16MB cfi.pflash and aborts), plus a null audio backend. Mirror
+          # that contract exactly. -kernel loads the ELF micro_flash.
+          "$OUT/qemu-pebble.exe" \
+            -rtc base=localtime \
+            -serial null -serial null -serial file:serial-emery.log \
+            -kernel "$PWD/fw-emery/qemu_micro_flash.bin" \
+            -machine pebble-emery -cpu cortex-m33 \
+            -drive if=mtd,format=raw,file="$PWD/fw-emery/qemu_spi_flash.bin" \
+            -audio driver=none,id=audio0 \
+            -L "$OUT/pc-bios" \
+            -vnc :2 &
+          QPID=$!
+          sleep 60
+          kill "$QPID" 2>/dev/null || taskkill //F //PID "$QPID" 2>/dev/null || true
+          echo "===== serial-emery.log ====="
+          cat serial-emery.log || true
+          echo "============================"
+          if grep -q "Ready for communication" serial-emery.log; then
+            echo "GATE-EMERY PASS: emery (M33) booted to Ready for communication on ARM64"
+          elif grep -q "Booting firmware" serial-emery.log; then
+            echo "GATE-EMERY PARTIAL: firmware started booting (investigate why it did not complete)"; exit 1
+          else
+            echo "GATE-EMERY FAIL: no boot markers — native ARM64 qemu did not run the emery machine"; exit 1
+          fi
+
+      - name: Upload gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase0-gate-evidence
+          path: |
+            serial.log
+            serial-emery.log
