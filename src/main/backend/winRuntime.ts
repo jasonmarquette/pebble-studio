@@ -37,10 +37,18 @@ export interface WinRuntimeCtx {
   pyDevDir?: string;
   /** Existence predicate (injected in tests). Defaults to fs.existsSync. */
   exists?: (p: string) => boolean;
+  /**
+   * Whether the REAL host CPU is ARM64. `process.arch` cannot tell us this — it
+   * reports `x64` for an emulated x64 process on Windows-on-ARM — so this is
+   * derived from the WOW64 env vars via hostIsArm64(process.env) in defaultCtx.
+   * Optional (defaults to false when omitted) so existing ctx literals compile.
+   */
+  hostArm64?: boolean;
 }
 
 /** Bundle dir names under resources/ (packaged) or vendor/ (dev). */
 const QEMU_BUNDLE = "qemu-pebble-win";
+const QEMU_BUNDLE_ARM64 = "qemu-pebble-win-arm64";
 const PY_BUNDLE = "pebble-py";
 const SDK_BUNDLE = "pebble-sdk";
 const TIMESHIM_WIN_BUNDLE = "timeshim-win";
@@ -51,6 +59,18 @@ const TIMESHIM_WIN_BUNDLE = "timeshim-win";
  * locates its home from the containing directory, NOT the exe name, so renaming
  * is safe. The build script (build-pebble-py.ps1) emits this name. */
 const PY_EXE_NAME = "PebbleStudioEmu.exe";
+
+/**
+ * True iff the REAL host CPU is ARM64. On Windows-on-ARM an emulated x64 process
+ * sees `process.arch === "x64"`; the host arch surfaces only via the WOW64 env
+ * vars: PROCESSOR_ARCHITEW6432 is "ARM64" when an x86/x64 process runs on an
+ * ARM64 host, and PROCESSOR_ARCHITECTURE is "ARM64" for a natively-arm64 process.
+ */
+export function hostIsArm64(env: NodeJS.ProcessEnv): boolean {
+  const wow = (env.PROCESSOR_ARCHITEW6432 ?? "").toUpperCase();
+  const arch = (env.PROCESSOR_ARCHITECTURE ?? "").toUpperCase();
+  return wow === "ARM64" || arch === "ARM64";
+}
 
 function exists(ctx: WinRuntimeCtx, p: string): boolean {
   return (ctx.exists ?? existsSync)(p);
@@ -64,8 +84,22 @@ function bundleDir(ctx: WinRuntimeCtx, name: string): string {
   return winPath.join(ctx.repoRoot, "vendor", name);
 }
 
-/** Absolute path to the bundled qemu-pebble.exe. */
+/** Absolute path to the bundled qemu-pebble.exe.
+ *
+ * On a real ARM64 host, prefer the native-arm64 bundle when it is staged — an
+ * x86-64 qemu crashes under Windows-on-ARM emulation (its TCG JIT re-JIT is the
+ * worst case), so we spawn the native-arm64 exe instead. If the arm64 bundle is
+ * absent (e.g. a mis-built x64-only package on ARM) we fall back to the x64 exe,
+ * which reproduces today's behavior rather than pointing at a missing file. */
 export function qemuExe(ctx: WinRuntimeCtx): string {
+  if (ctx.hostArm64) {
+    const arm64 = winPath.join(bundleDir(ctx, QEMU_BUNDLE_ARM64), "qemu-pebble.exe");
+    if (exists(ctx, arm64)) {
+      console.warn("[winRuntime] host is ARM64 — using native arm64 qemu bundle");
+      return arm64;
+    }
+    console.warn("[winRuntime] host is ARM64 but arm64 qemu bundle is missing — falling back to x64 qemu (emulated; may fail)");
+  }
   return winPath.join(bundleDir(ctx, QEMU_BUNDLE), "qemu-pebble.exe");
 }
 
@@ -158,5 +192,6 @@ export async function defaultCtx(): Promise<WinRuntimeCtx> {
     userDataDir: app.getPath("userData"),
     // Opt-in only; unset (and ignored) in packaged builds, which short-circuit above.
     pyDevDir: process.env.PEBBLE_STUDIO_PY_DEV_DIR,
+    hostArm64: hostIsArm64(process.env),
   };
 }

@@ -1,6 +1,6 @@
 {
   "name": "pebble-studio",
-  "version": "3.0.11",
+  "version": "3.0.12",
   "description": "Modern GUI for the qemu-pebble emulator",
   "author": "Jason Lin",
   "main": "dist/main/index.cjs",
@@ -18,6 +18,7 @@
     "dist": "npm run build && electron-builder --win && node scripts/set-exe-icon.mjs",
     "gen:icon": "node scripts/gen-icon.mjs",
     "dist:mac": "npm run build && electron-builder --mac --arm64"
+    "fetch:arm64-qemu": "node scripts/fetch-arm64-qemu.mjs"
   },
   "devDependencies": {
     "@resvg/resvg-js": "^2.6.2",
