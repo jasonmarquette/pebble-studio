@@ -63,6 +63,27 @@ async function qemuAvailable(): Promise<boolean> {
     /* fall through */
   }
 
+  // Probe the Pebble SDK location used by Pebble Tool on macOS.
+  if (process.platform === "darwin") {
+    const macSdkQemu = pathJoin(
+      home,
+      "Library",
+      "Application Support",
+      "Pebble SDK",
+      "SDKs",
+      "current",
+      "toolchain",
+      "bin",
+      "qemu-pebble",
+    );
+    try {
+      await access(macSdkQemu);
+      return true;
+    } catch {
+      /* fall through */
+    }
+  }
+
   // Probe the Windows bundled SDK location (win32 only).
   if (process.platform === "win32") {
     const local = process.env.LOCALAPPDATA ?? "";
