@@ -796,7 +796,38 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null = () => nu
   });
   ipcMain.handle("emu:install", async (e, pbwPath: string) => {
     assertMainSender(e);
-    await withAppLogPaused(() => installWithBridgeRetry(() => requireDriver().install(pbwPath)));
+
+    const platform = currentPlatform;
+    if (!platform) throw new Error("No emulator platform is currently selected.");
+
+    const recoverBridge = async (): Promise<void> => {
+      console.warn("[install] bridge stopped responding — restarting emulator");
+      emuLive = false;
+      backlight.stop();
+      time.stop();
+      bridgeMonitor.stop();
+
+      try {
+        await requireDriver().stop();
+      } catch {
+        // The bridge may already be partially stopped.
+      }
+
+      const token: BootToken = { cancelled: false };
+      currentBootToken = token;
+      await requireDriver().start(platform, token);
+
+      if (token.cancelled) throw new Error("Bridge recovery boot was cancelled.");
+
+      void time.applyAll();
+      bridgeMonitor.start(platform);
+      emuLive = true;
+    };
+
+    await withAppLogPaused(() =>
+      installWithBridgeRetry(() => requireDriver().install(pbwPath), { recoverBridge }),
+    );
+
     loaded.add(pbwPath);
     reassertTime();
   });
