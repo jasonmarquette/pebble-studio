@@ -18,7 +18,7 @@
 const BRIDGE_BUSY_RE = /unable to add pbw|emulator already running/i;
 /** Signatures that indicate the pypkjs/WebSocket bridge stopped responding. */
 const BRIDGE_DEAD_RE =
-  /Timed out waiting for install confirmation|WebSocketConnectionClosedException|Connection to remote host was lost|libpebble2\.exceptions\.TimeoutError/i;
+  /Timed out waiting for install confirmation|WebSocketConnectionClosedException|Connection to remote host was lost|libpebble2\.exceptions\.TimeoutError|Couldn't launch emulator/i;
 
 
 /** True if `err` is the transient pypkjs "another client holds the slot" rejection. */

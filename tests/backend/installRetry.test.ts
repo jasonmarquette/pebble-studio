@@ -25,6 +25,7 @@ describe("isBridgeDeadError", () => {
     expect(isBridgeDeadError(new Error("WebSocketConnectionClosedException"))).toBe(true);
     expect(isBridgeDeadError(new Error("Connection to remote host was lost."))).toBe(true);
     expect(isBridgeDeadError(new Error("libpebble2.exceptions.TimeoutError"))).toBe(true);
+    expect(isBridgeDeadError(new Error("Couldn't launch emulator"))).toBe(true);
   });
 
   it("does not match unrelated failures", () => {
