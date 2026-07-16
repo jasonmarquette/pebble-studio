@@ -1,18 +1,19 @@
 /** Host-side paths for the emulator stack.
  *
- * Native Linux/macOS pebble-tool writes its state file to Python's
- * tempfile.gettempdir(), which matches Node's tmpdir(). WSL is different: the
- * commands execute inside the Linux distro, so its state file remains under
- * /tmp regardless of the Windows host's temp directory.
+ * Native macOS pebble-tool writes its state file under $TMPDIR, while Linux and
+ * WSL normally use /tmp. These values are shell expressions rather than
+ * host-resolved Node paths so the same command string resolves inside whichever
+ * POSIX shell actually executes it.
  *
- * All POSIX paths are embedded UNQUOTED in shell command lines, so they must
- * stay quote-free and space-free. tests/backend/hostPaths.test.ts enforces that
- * shape. */
-import { tmpdir } from "node:os";
+ * All three are embedded UNQUOTED in shell command lines (which may cross the
+ * wsl.exe -- bash -lc boundary), so they must stay quote-free and space-free;
+ * $HOME/$TMPDIR are expanded by that shell. tests/backend/hostPaths.test.ts
+ * enforces that shape. */
 
-export const EMU_INFO_PATH = `${tmpdir()}/pb-emulator.json`;
-export const EMU_LOG_PATH = `${tmpdir()}/pebble-emu.log`;
-export const WSL_EMU_INFO_PATH = "/tmp/pb-emulator.json";
+// When TMPDIR is set (macOS), use it. Otherwise fall back to /tmp (Linux/WSL).
+// The two adjacent parameter expansions produce exactly one path.
+export const EMU_INFO_PATH = "${TMPDIR:+$TMPDIR/pb-emulator.json}${TMPDIR:-/tmp/pb-emulator.json}";
+export const EMU_LOG_PATH = "${TMPDIR:+$TMPDIR/pebble-emu.log}${TMPDIR:-/tmp/pebble-emu.log}";
 export const SDK_ROOT = "$HOME/.local/share/pebble-sdk/SDKs/current";
 
 export interface WinHostPaths {
