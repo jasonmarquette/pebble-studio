@@ -1,3 +1,4 @@
+import { EMU_INFO_PATH } from "./hostPaths.js";
 import type { PlatformId, ButtonId, ButtonAction } from "../../shared/types.js";
 
 export interface PebbleCommand {
@@ -165,7 +166,7 @@ export function activateHealthCmd(): PebbleCommand {
     `H=$HOME/.pebble-studio/pb-activate-health.py; ` +
     `echo ${ACTIVATE_HEALTH_HELPER_B64} | base64 -d > $H; ` +
     `PYBIN=$(head -1 $(command -v pebble) | cut -c3-); ` +
-    `timeout -k 2 6 $PYBIN $H`;
+    `timeout -k 2 6 $PYBIN $H ${EMU_INFO_PATH}`;
   return { cmd: "bash", args: ["-lc", oneLiner] };
 }
 
